@@ -1,25 +1,40 @@
 use core::str;
 
+use clap::Parser;
 use tokio::{
     io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
     select,
 };
 
-pub async fn start_chat_client(address: &str, username: &str) {
-    let mut connection = match TcpStream::connect(address).await {
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, default_value_t = 6028)]
+    port: u16,
+    #[arg(short('d'), default_value_t = String::from("localhost"))]
+    host: String,
+    #[arg(short('u'), default_value_t = String::from("john_doe"))]
+    username: String,
+}
+
+#[tokio::main]
+async fn main() {
+    let args = Args::parse();
+    let server_addr = format!("{}:{}", args.host, args.port);
+    let mut connection = match TcpStream::connect(&server_addr).await {
         Ok(conn) => conn,
         Err(err) => {
             println!(
                 "Failed to connect to server {}: {}",
-                address,
+                &server_addr,
                 err.to_string()
             );
             return;
         }
     };
 
-    match connection.write(username.as_bytes()).await {
+    match connection.write(args.username.as_bytes()).await {
         Ok(0) => {}
         Ok(len) => {}
         Err(err) => {
@@ -57,7 +72,6 @@ pub async fn start_chat_client(address: &str, username: &str) {
                 println!("Failed to receive message from server: {}", err.to_string());
               },
             }
-            println!();
           }
         }
     }
