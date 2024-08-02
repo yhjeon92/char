@@ -2,7 +2,7 @@ use core::str;
 
 use clap::Parser;
 use tokio::{
-    io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Interest},
     net::TcpStream,
     select,
 };
@@ -22,6 +22,7 @@ struct Args {
 async fn main() {
     let args = Args::parse();
     let server_addr = format!("{}:{}", args.host, args.port);
+
     let mut connection = match TcpStream::connect(&server_addr).await {
         Ok(conn) => conn,
         Err(err) => {
@@ -34,9 +35,15 @@ async fn main() {
         }
     };
 
-    match connection.write(args.username.as_bytes()).await {
-        Ok(0) => {}
-        Ok(len) => {}
+    match connection.ready(Interest::WRITABLE).await {
+        Ok(_) => match connection.write(args.username.as_bytes()).await {
+            Ok(0) => {}
+            Ok(_len) => {}
+            Err(err) => {
+                println!("Failed to send message to server: {}", err.to_string());
+                return;
+            }
+        },
         Err(err) => {
             println!("Failed to send message to server: {}", err.to_string());
             return;
@@ -44,35 +51,73 @@ async fn main() {
     }
 
     let stdin = io::stdin();
-    let mut reader = BufReader::new(stdin);
+    let mut stdin_reader = BufReader::new(stdin);
     let mut stdin_buf = String::new();
+
     let mut recv_buf: [u8; 16384] = [0u8; 16384];
+    // let mut recv_buf = Vec::<u8>::new();
+
+    _ = connection.flush().await;
+    let (mut socket_reader, mut socket_writer) = connection.split();
 
     loop {
         select! {
-          _ = reader.read_line(&mut stdin_buf) => {
-            _ = connection.write(stdin_buf.as_bytes()).await;
-          }
-          _ = connection.readable() => {
-            match connection.read(&mut recv_buf).await {
-              Ok(0) => {
-                continue;
+          _ = stdin_reader.read_line(&mut stdin_buf) => {
+            match socket_writer.write(stdin_buf.as_bytes()).await {
+              Ok(_len) => {
+                // println!("Sent {} bytes", len);
               }
-              Ok(len) => {
-                match str::from_utf8(&recv_buf[0..len]) {
-                  Ok(message) => {
-                    println!("{}", message);
-                  }
-                  Err(err) => {
-                    println!("Failed to encode message to UTF8 string: {}", err.to_string());
-                  }
-                }
-              },
               Err(err) => {
-                println!("Failed to receive message from server: {}", err.to_string());
-              },
+                println!("Failed to send message: {}", err.to_string());
+              }
             }
           }
+          res = socket_reader.read(&mut recv_buf) => {
+            match res {
+                  Ok(0) => {
+                    println!("Server closed connection");
+                    return;
+                  }
+                  Ok(len) => {match str::from_utf8(&recv_buf[0..len]) {
+                    Ok(message) => {
+                      println!("{}", message);
+                    },
+                    Err(err) => {
+                      println!("Parsing input Error ! {}", err.to_string());
+                    },
+                  }},
+                  Err(err) => {
+                    println!("Socket Error! {}", err.to_string());
+                  },
+                }
+              }
+          // readable = connection.readable() => {
+          //   match readable {
+          //     Ok(()) => {
+          //       match connection.try_read(&mut recv_buf) {
+          //         Ok(0) => {
+          //           continue;
+          //         }
+          //         Ok(len) => {
+          //           match str::from_utf8(&recv_buf[0..len]) {
+          //             Ok(message) => {
+          //               println!("{}", message);
+          //             }
+          //             Err(err) => {
+          //               println!("Failed to encode message to UTF8 string: {}", err.to_string());
+          //             }
+          //           }
+          //         },
+          //         Err(err) => {
+          //           println!("Failed to receive message from server: {}", err.to_string());
+          //         },
+          //       }
+          //     },
+          //     Err(err) => {
+          //       println!("Error {}", err.to_string());
+          //     },
+          //   }
+          // }
         }
     }
 }

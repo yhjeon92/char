@@ -1,9 +1,7 @@
+use clap::Parser;
 use core::str;
-use std::{thread::sleep, time::Duration};
-
-use clap::{Command, Parser};
 use tokio::{
-    io::{AsyncReadExt, Interest},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     select,
     sync::broadcast::{Receiver, Sender},
@@ -46,8 +44,8 @@ async fn main() {
     loop {
         match socket_lsnr.accept().await {
             Ok((client_stream, addr)) => {
+                let rx = tx.subscribe();
                 let tx_client = tx.clone();
-                let rx = tx_client.subscribe();
                 task::spawn(async move { handle_client(client_stream, tx_client, rx).await });
                 println!("Client {}", addr.to_string());
             }
@@ -66,36 +64,27 @@ async fn handle_client(
     let mut buf: [u8; 16384] = [0u8; 16384];
     let mut client_name = String::new();
 
-    match stream.readable().await {
-        Ok(_) => match stream.try_read(&mut buf) {
-            Ok(len) => {
-                println!("{}", len);
-                let mut msg_buf = vec![0u8; len];
-                msg_buf[..len].clone_from_slice(&buf[..len]);
-                match str::from_utf8(&msg_buf.as_slice()) {
-                    Ok(msg) => {
-                        _ = stream.try_write(format!("joined chat as {}", msg).as_bytes());
-                        client_name = msg.to_string();
+    match stream.read(&mut buf).await {
+        Ok(len) => match str::from_utf8(&buf[0..len]) {
+            Ok(msg) => {
+                _ = stream
+                    .write(format!("joined chat as {}\0", msg).as_bytes())
+                    .await;
+                client_name = msg.to_string();
 
-                        println!("{}", msg);
-                    }
-                    Err(err) => println!("Failed to convert client message: {}", err.to_string()),
-                }
+                println!("{}", msg);
             }
-            Err(err) => {
-                println!("Failed to read client data: {}", err.to_string());
-            }
+            Err(err) => println!("Failed to convert client message: {}", err.to_string()),
         },
         Err(err) => {
-            println!("{}", err.to_string());
-            return;
+            println!("Failed to read client data: {}", err.to_string());
         }
     }
 
     loop {
         select! {
-            _ = stream.readable() => {
-                match stream.read(&mut buf).await {
+            res = stream.read(&mut buf) => {
+                match res {
                     Ok(0) => {
                         println!("Connection closed for user {}", client_name);
                         return;
@@ -111,11 +100,24 @@ async fn handle_client(
                     }
                 }
             }
-
             received = rx.recv() => {
                 match received {
                     Ok(msg) => {
-                        _ = stream.try_write(format!("[{}] {}", msg.user, msg.message).as_bytes());
+                        match stream.writable().await {
+                            Ok(_) => {
+                                match stream.try_write(format!("[{}] {}\0", msg.user, msg.message).as_bytes()) {
+                                    Ok(_len) => {
+                                        // println!("Succesfully sent {} bytes for user {}", len, client_name.clone());
+                                    }
+                                    Err(err) => {
+                                        println!("Send error {}", err.to_string());
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                println!("TCP socket error {}", err.to_string());
+                            },
+                        }
                     },
                     Err(err) => {
                         println!("Failed to receive chat message: {}", err.to_string());
